@@ -477,17 +477,70 @@ Walk through every flow in `PRD.md` Section "User Flows" for real, start to fini
 
 ---
 
-## Part 4 — Launch (v1.0, per `ROADMAP.md`)
+## Part 4 — Launch (v1.0, REVISED 2026-09: VPS + Docker + CI/CD, not Vercel)
 
-- [ ] Provision managed PostgreSQL (Neon, Supabase, or Railway Postgres)
-- [ ] Deploy the Next.js app to Vercel (single deployment — UI and API together)
-- [ ] Set production environment variables (`DATABASE_URL`, `JWT_SECRET`) in Vercel's project settings
-- [ ] Run `drizzle-kit migrate` against the production database
-- [ ] Re-run the seed script against the production database (demo admin + cashier account, sample products)
-- [ ] Write the project README (setup instructions, architecture overview, screenshots)
-- [ ] Do one final full walkthrough of Part 3.5's QA list against the **live** deployed URL, not localhost
+**Plan change (2026-09):** the original plan (below, kept for reference) was "deploy to Vercel" — near-zero config, but also near-zero learning value beyond clicking a button. Switched to **self-hosting on a VPS**, explicitly because the goal now includes learning real deployment + CI/CD mechanics, not just getting BrewPoint online. This is genuinely not a detour — `ROADMAP.md`'s own v1.3 phase ("Testing, Observability & CI/CD") already planned a GitHub Actions pipeline; this just does the deploy half of that pipeline for real (SSH to a server you control) instead of delegating it to Vercel's Git integration. A domain is already owned, so real HTTPS is in scope from the start, not an afterthought.
 
-**Once every box above is checked, MVP v1.0 is done — the rest of your journey continues in `ROADMAP.md` starting at v1.1 (indexing, Redis via Upstash, rate limiting).**
+**What actually changes vs. the Vercel plan:** Vercel would have run the Next.js app *for* you (build, serverless functions, TLS, zero-downtime deploys — all invisible). On a VPS, every one of those is something you set up and can see failing when it fails — which is the point. Concretely this adds: a `Dockerfile` (package the app as a container), a reverse proxy for HTTPS (nginx or Caddy), and a CI/CD pipeline that does what Vercel's Git integration used to do (GitHub Actions SSHing into the server on every push to `main`).
+
+<details>
+<summary>Original Vercel-based plan (superseded, kept for history)</summary>
+
+- Provision managed PostgreSQL (Neon, Supabase, or Railway Postgres)
+- Deploy the Next.js app to Vercel (single deployment — UI and API together)
+- Set production environment variables (`DATABASE_URL`, `JWT_SECRET`) in Vercel's project settings
+- Run `drizzle-kit migrate` against the production database
+- Re-run the seed script against the production database
+- Write the project README
+- Do one final full walkthrough of Part 3.5's QA list against the live deployed URL
+
+</details>
+
+### 4.1 Provision & harden the VPS
+
+**Concept:** a VPS gives you a bare Ubuntu machine with nothing on it — no web server, no Docker, no firewall rules beyond the provider's defaults. Everything below is what "hosting" actually consists of once nothing is automated for you.
+
+- [ ] Provision a VPS running **Ubuntu 22.04 or 24.04 LTS** (any provider — DigitalOcean, Hetzner, AWS Lightsail, Contabo, etc. all work identically from here on, since everything below is plain Linux/Docker, not provider-specific). 1 vCPU / 1-2GB RAM is enough for this app + Postgres at BrewPoint's scale
+- [ ] **Harden SSH access before anything else touches the internet:** create a non-root user with `sudo`, copy your SSH public key to it (`ssh-copy-id`), then disable root SSH login and password auth entirely in `/etc/ssh/sshd_config` (`PermitRootLogin no`, `PasswordAuthentication no`) — a fresh VPS gets password-guessed by bots within minutes of going live, key-only auth closes that off completely
+- [ ] Enable a firewall (`ufw`) allowing only `22` (SSH), `80` (HTTP, needed for Let's Encrypt's verification), and `443` (HTTPS) — deny everything else by default
+- [ ] Install Docker Engine + the Docker Compose plugin on the VPS (Docker's official install script, not the outdated `apt` package)
+
+### 4.2 Containerize the app
+
+**Concept:** `docker-compose.yml` currently only runs Postgres for local dev — the app itself still runs via `npm run dev` on your own machine. Deploying means the *app* also needs to run as a container, on the VPS, not your laptop.
+
+- [ ] Add `output: "standalone"` to `next.config.ts` — this makes `next build` emit a minimal, self-contained server bundle (only the files actually needed at runtime, node_modules pruned to production deps only) instead of requiring the full `node_modules` tree in the final image
+- [ ] Write a multi-stage `Dockerfile`: a `deps` stage (`npm ci`), a `build` stage (copies deps + source, runs `next build`), and a slim final runtime stage (copies only the `standalone` output + `public/` + `.next/static`, runs `node server.js`) — multi-stage keeps the shipped image small since build tools/dev dependencies never make it into the final layer
+- [ ] Add a `.dockerignore` (`node_modules`, `.next`, `.git`, `tests/`, `.env*`) so the build context isn't megabytes of stuff Docker doesn't need to see
+- [ ] Extend `docker-compose.yml`: add an `app` service (`build: .`, depends on `db`), pointing its `DATABASE_URL` at the **Docker network hostname** `db` (e.g. `postgres://brewpoint:${DB_PASSWORD}@db:5432/brewpoint_db`) instead of `localhost` — inside Docker's internal network, containers reach each other by service name, not `localhost`
+- [ ] **Real bug found while planning this (2026-09):** `docker-compose.yml`'s Postgres password (`123456990`) is hardcoded in plain text in a file that's checked into git, and `.env`'s `DATABASE_URL` reuses that exact same weak password. Fine for a throwaway local dev container; **not fine to carry to a VPS reachable from the internet.** Fix: move the password to a `.env` file (already gitignored — confirm this), reference it in `docker-compose.yml` as `${DB_PASSWORD}`, and generate a real random password for the VPS's `.env` — never reuse the dev one
+
+### 4.3 Reverse proxy + HTTPS
+
+**Concept:** the app container will listen on some internal port (e.g. `3000`) that isn't directly exposed to the internet. A reverse proxy sits in front of it, terminates HTTPS (so browsers see a valid certificate), and forwards plain HTTP traffic to the app container internally.
+
+- [ ] **Recommended: Caddy**, not nginx+certbot, for the first deployment — Caddy gets free automatic HTTPS (via Let's Encrypt) from a ~5-line config file with zero manual certificate renewal setup, versus nginx needing a separate `certbot` install + a cron job + more config syntax to get the same result. nginx is more common in job postings, but Caddy is the better *first* reverse proxy to actually understand what a reverse proxy does, without fighting certificate config at the same time
+- [ ] Point the domain's DNS **A record** at the VPS's IP address
+- [ ] Add a `Caddyfile` (one block: `yourdomain.com { reverse_proxy app:3000 }`) and a `caddy` service to `docker-compose.yml`
+- [ ] **Do this milestone before automating anything:** manually SSH into the VPS, `git clone` the repo, `docker compose up -d --build`, run `drizzle-kit migrate` + the seed script against the VPS's Postgres, and confirm the app loads over `https://yourdomain.com` in a browser. **Why manual first:** you can't tell whether a CI/CD pipeline is broken or whether the *deployment itself* is broken unless you've seen it work by hand at least once — automating a step you've never done manually just means the first failure you debug is two unknowns tangled together instead of one
+
+### 4.4 CI/CD pipeline (GitHub Actions)
+
+**Concept:** this replaces what "Vercel's Git integration" used to do invisibly — on every push to `main`, a pipeline should run checks, then deploy automatically if they pass, without you touching the VPS by hand again.
+
+- [ ] Store 3 GitHub Actions secrets on the repo: the VPS's SSH private key, its IP/hostname, and the SSH username — never hardcode these into the workflow file
+- [ ] Write `.github/workflows/deploy.yml`: on push to `main`, first run a **test gate** (`rtk tsc`, `npm run lint`, `npm run build`) — matching `ROADMAP.md` v1.3's "a PR can't be merged if checks fail" principle — then, only if that passes, SSH into the VPS and run `git pull && docker compose up -d --build`
+- [ ] **Start with SSH-deploy (rebuild on the server), not a registry-based deploy.** The more "proper" version builds the Docker image in CI, pushes it to a registry (GitHub Container Registry is free), and has the VPS just `docker pull` a ready-made image — faster deploys, no build tools needed on the VPS. That's a good v2 once the simpler SSH-deploy version is understood end-to-end; skipping straight to it means debugging registry auth and the deploy mechanics at the same time
+- [ ] Test the pipeline for real: make a trivial change (e.g. a copy tweak), push to `main`, watch the Action run in GitHub's UI, confirm the change is live on the domain afterward without touching the VPS manually
+
+### 4.5 Production correctness & wrap-up
+
+- [ ] Generate a real, strong `JWT_SECRET` for the VPS's `.env` — never reuse the local dev one
+- [ ] Run the final Part 3.5 QA walkthrough (including the Playwright suite, pointed at the live domain via its `baseURL` config) against `https://yourdomain.com`, not localhost
+- [ ] Run the Part 3's still-pending **manual concurrency test** against the live server too, if not already done locally — network latency on a real server changes the timing window, worth re-confirming there
+- [ ] Write/update the project README with the actual deployed architecture (VPS + Docker + Caddy + GitHub Actions) — per `ROADMAP.md`'s own working principle #3, explain *why* each piece was chosen (e.g. why Caddy over nginx here), not just how to run it, since this doubles as portfolio documentation
+
+**Once every box above is checked, MVP v1.0 is live — the rest of your journey continues in `ROADMAP.md` starting at v1.1 (indexing, caching, rate limiting), noting that the Redis/Upstash and CI/CD sections there will need a small reread since they were written assuming Vercel.**
 
 ---
 

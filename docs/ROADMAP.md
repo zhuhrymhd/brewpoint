@@ -136,8 +136,8 @@ This roadmap breaks down how BrewPoint gets built, from an empty repo to a live,
 **Scope:**
 
 - Manual QA pass across all user flows defined in `PRD.md`.
-- Deploy the single Next.js app to Vercel (or containerize and deploy to Railway/Fly.io if you want the Docker experience) — one deployment target instead of two, since there's one app.
-- Provision managed PostgreSQL (e.g. Neon, Supabase, Railway Postgres).
+- Deploy the single Next.js app, containerized via Docker, to a self-managed VPS behind a Caddy reverse proxy for HTTPS — one deployment target instead of two, since there's one app. *(Revised 2026-09 — originally planned as a Vercel deploy; switched to self-hosting specifically to get hands-on with real deployment + CI/CD mechanics. See `TODO.md` Part 4 for the detailed plan.)*
+- Run PostgreSQL as a Docker container alongside the app on the same VPS (via `docker-compose.yml`), rather than a separate managed provider — keeps the whole stack in one place to reason about while learning deployment.
 - Environment variable/config management per environment (local, preview, production) — see `TECH_SPEC.md` Section 9.
 - Basic README with setup instructions and architecture overview for portfolio visibility.
 - Seed/demo data so the live deployment is explorable without manual setup.
@@ -157,8 +157,8 @@ This roadmap breaks down how BrewPoint gets built, from an empty repo to a live,
 **Scope:**
 
 - **Database indexing:** Add indexes on frequently queried columns (`products.name`, `products.barcode`, `transactions.created_at`, `transactions.cashier_id`). Benchmark query plans before/after with `EXPLAIN ANALYZE`.
-- **Redis caching:** Cache the product catalog (cache-aside pattern) and today's dashboard summary, with explicit invalidation on writes (product update, new transaction). Use **Upstash Redis** (HTTP-based, works cleanly with Vercel's serverless/Edge runtime) rather than a traditional persistent Redis connection.
-- **Rate limiting:** Apply rate limits to the login Route Handler (brute-force protection) and checkout Route Handler (abuse protection), using Upstash's `@upstash/ratelimit` package backed by the same Redis instance.
+- **Redis caching:** Cache the product catalog (cache-aside pattern) and today's dashboard summary, with explicit invalidation on writes (product update, new transaction). *(Revised 2026-09 — originally planned as Upstash Redis specifically for Vercel's serverless/Edge runtime; now that the app runs as a long-lived Docker container on a VPS rather than serverless, a plain self-hosted Redis container in `docker-compose.yml` is the more natural default — one more service alongside `app`/`db`, no external account or HTTP-per-call overhead needed. Upstash remains a fine choice if avoiding another container to operate is preferred.)*
+- **Rate limiting:** Apply rate limits to the login Route Handler (brute-force protection) and checkout Route Handler (abuse protection), backed by the same Redis instance (`@upstash/ratelimit` also works against a self-hosted Redis via its Redis-protocol client, not just Upstash's own service).
 - **Concurrency hardening:** Load-test simultaneous checkouts on the same product to confirm `.for("update")` row-locking prevents overselling under real concurrent load, not just in theory.
 - **API response time benchmarking:** Document before/after metrics for the README/portfolio writeup.
 
@@ -195,7 +195,7 @@ This roadmap breaks down how BrewPoint gets built, from an empty repo to a live,
 - End-to-end tests for the main user flows (login → checkout → dashboard) using Playwright.
 - Structured logging (request logs, error logs) instead of `console.log`.
 - Health/readiness Route Handler suitable for uptime monitoring.
-- GitHub Actions pipeline: run tests → build → deploy automatically on merge to main (Vercel's Git integration handles deploy; Actions handles the test gate before it).
+- Extend the GitHub Actions pipeline already built in `TODO.md` Part 4 (which currently gates on `tsc`/lint/build, then SSH-deploys to the VPS): add the new Vitest unit/integration tests and the existing Playwright e2e suite as earlier steps in that same workflow, so a merge to `main` is blocked — not just discouraged — if any of them fail. *(Revised 2026-09 — the deploy half of this was pulled forward into Part 4 since the VPS plan change made "the test gate before Vercel deploys" no longer accurate; Vercel never enters the picture. This phase now only adds the test suites themselves.)*
 
 **Definition of done:** A pull request can't be merged if tests fail, and every merge to main auto-deploys — a real CI/CD workflow to reference in interviews.
 
