@@ -5,7 +5,7 @@ export function BestSellers({ items }: { items: BestSeller[] }) {
   const maxQty = items[0]?.totalQuantity ?? 1;
 
   return (
-    <div className="w-[550px] rounded-xl border border-border bg-card p-5">
+    <div className="w-full rounded-xl border border-border bg-card p-5">
       <div className="mb-1.5 flex items-baseline justify-between">
         <h3 className="font-display text-base font-semibold text-primary">
           Best sellers

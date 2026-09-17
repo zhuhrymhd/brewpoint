@@ -133,9 +133,10 @@ export default function DashboardPage() {
             deltaNote={getDeltaNote(period)}
           />
 
-          <BestSellers items={bestSellers ?? []} />
-
-          <LowStock products={productsData?.items ?? []} />
+          <div className="grid grid-cols-1 items-start gap-6 md:grid-cols-2">
+            <BestSellers items={bestSellers ?? []} />
+            <LowStock products={productsData?.items ?? []} />
+          </div>
         </>
       )}
     </div>

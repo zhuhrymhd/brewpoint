@@ -10,7 +10,7 @@ export function LowStock({ products }: { products: Product[] }) {
     .sort((a, b) => a.stockQuantity - b.stockQuantity);
 
   return (
-    <div className="w-[600px] rounded-xl border border-border bg-card p-5">
+    <div className="w-full rounded-xl border border-border bg-card p-5">
       <div className="mb-2.5 flex items-center gap-2">
         <AlertTriangle className="size-4 text-warning" />
         <h3 className="font-display text-base font-semibold text-primary">
